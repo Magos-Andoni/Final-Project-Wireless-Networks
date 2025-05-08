@@ -1,0 +1,85 @@
+%% Clear Workspace
+clear; close all; clc;
+
+%% Parameters
+time           = linspace(0, 2*pi, 120);   % common time base
+numSamples     = 50;                       % number of samples per waveform
+estimatedDelay = 16;                       % alignment delay after demod
+sps            = 8;                        % samples per symbol for GMSK
+
+%% Define your four message waves
+m1 =  5*sin(10*pi*time);
+m2 = -sin(10*pi*time);  % sin(10πt+π) = -sin(10πt)
+m3 = 10*sin(2*pi*time) + (3/10)*sin(6*pi*time) + (5/10)*sin(10*pi*time);
+m4 =  5*sin(2*pi*time+pi) + (3/5)*sin(6*pi*time+pi) + (1)*sin(10*pi*time+pi);
+
+messages    = {m1, m2, m3, m4};
+signalNames = {'m1','m2','m3','m4'};
+
+%% Loop through each message waveform
+for k = 1:numel(messages)
+    msg = messages{k};
+    
+    % — Sample the analog waveform —
+    idx        = round(linspace(1, length(msg), numSamples));
+    sampled    = msg(idx);
+    threshold  = mean(sampled);
+    bitsIn     = sampled >= threshold;      % binary conversion
+    
+    % — GMSK modulation & demodulation (with oversampling) —
+    modulator = comm.GMSKModulator( ...
+        'BitInput',        true, ...
+        'SamplesPerSymbol',sps);
+    demodulator = comm.GMSKDemodulator( ...
+        'BitOutput',       true, ...
+        'SamplesPerSymbol',sps);
+    
+    txSignal = step(modulator, bitsIn.');           % transmit (complex baseband)
+    rxBitsRaw = step(demodulator, txSignal);         % raw demodulated bits
+    rxBits    = rxBitsRaw(estimatedDelay+1:end);    % drop initial transient
+    bitsIn    = bitsIn(1:length(rxBits));           % align lengths
+    
+    % — Compute BER —
+    ber = sum(bitsIn ~= rxBits) / length(bitsIn);
+    fprintf('BER for %s: %0.4f (%d errors out of %d bits)\n', ...
+        signalNames{k}, ber, sum(bitsIn~=rxBits), length(bitsIn));
+    
+    % — Plot results for this waveform —
+    figure('Name', signalNames{k}, 'NumberTitle','off');
+    
+    subplot(4,1,1);
+      plot(msg, 'LineWidth', 1.5);
+      title([signalNames{k} ' — Analog waveform']);
+      xlabel('Sample index');    ylabel('Amplitude');
+    
+    subplot(4,1,2);
+      stem(bitsIn, 'filled');
+      title('Input bits (after threshold)');
+      xlabel('Bit index');       ylabel('0 / 1');
+      ylim([-0.2 1.2]);
+    
+    subplot(4,1,3);
+      plot(real(txSignal)); hold on;
+      plot(imag(txSignal), 'o');
+      hold off;
+      legend('I (real)','Q (imag)');
+      title('Transmitted GMSK signal');
+      xlabel('Time');            ylabel('Amplitude');
+    
+    subplot(4,1,4);
+      stem(rxBits, 'filled');
+      title('Demodulated & aligned bits');
+      xlabel('Bit index');       ylabel('0 / 1');
+      ylim([-0.2 1.2]);
+    
+    % — Eye diagram of the modulated waveform —
+    figure('Name',[signalNames{k} ' — Eye Diagram'],'NumberTitle','off');
+    eyediagram(real(txSignal), 2*sps);
+    title([signalNames{k} ' — Eye Diagram (I-branch)']);
+    
+    % — Constellation diagram —
+    figure('Name',[signalNames{k} ' — Constellation'],'NumberTitle','off');
+    scatterplot(txSignal);
+    title([signalNames{k} ' — Constellation Diagram']);
+end
+

@@ -1,0 +1,122 @@
+%% GMSK vs FM Comparison Script (corrected)
+
+clear; close all; clc;
+
+%% Common Parameters
+bitRate    = 1e3;          % bits per second
+Fs         = 200e3;        % sampling frequency (Hz)
+sps        = Fs/bitRate;   % samples per symbol (integer)
+BT         = 0.3;          % Gaussian filter BT product for GMSK
+Fc         = 50e3;         % FM carrier frequency (Hz)
+freqDev    = 5e3;          % FM frequency deviation (Hz)
+Nbits      = 1e4;          % number of bits for test
+snrVec     = 0:2:12;       % SNR range in dB for AWGN
+
+%% Generate PRBS Test Bits
+rng(123);
+bitsTx = randi([0 1], Nbits, 1);
+
+%% GMSK Modulator and Demodulator Setup
+gmod = comm.GMSKModulator(...
+    'BitInput',             true, ...
+    'SamplesPerSymbol',     sps,  ...
+    'BandwidthTimeProduct', BT);
+gdemod = comm.GMSKDemodulator(...
+    'BitOutput',            true, ...
+    'SamplesPerSymbol',     sps,  ...
+    'BandwidthTimeProduct', BT);
+
+% compute filter group delay (in samples)
+delay = gmod.PulseLength * sps/2;  
+
+%% FM Message Mapping
+m_fm = 2*bitsTx - 1;       % bipolar mapping for FM
+
+%% Preallocate BER arrays
+berGMSK = zeros(size(snrVec));
+berFM   = zeros(size(snrVec));
+
+%% Determine mid‐SNR index for waveform comparison
+midIdx = ceil(length(snrVec)/2);
+
+%% Loop over SNRs
+for i = 1:length(snrVec)
+    SNR = snrVec(i);
+
+    %--- GMSK chain ---
+    txG = gmod(bitsTx);
+    rxG = awgn(txG, SNR, 'measured');
+    bitsRxG_raw = gdemod(rxG);
+
+    % align to remove filter delay
+    bitsTxTrim = bitsTx(1:end-delay);
+    bitsRxG     = bitsRxG_raw(delay+1:end);
+    berGMSK(i)  = mean(bitsTxTrim ~= bitsRxG);
+
+    %--- FM chain ---
+    msgFM   = upsample(m_fm, sps);
+    txF     = fmmod(msgFM, Fc, Fs, freqDev);
+    rxF     = awgn(txF, SNR, 'measured');
+    rxFdem  = fmdemod(rxF, Fc, Fs, freqDev);
+    bitsRxF = rxFdem(1:sps:end) > 0;
+
+    berFM(i) = mean(bitsTx ~= bitsRxF);
+
+    % save mid‐SNR data for later plotting
+    if i == midIdx
+        rxF_mid   = rxFdem;
+        msgFM_mid = msgFM;
+    end
+end
+
+%% Plot BER vs SNR
+figure;
+semilogy(snrVec, berGMSK, 'o-', 'LineWidth', 1.5, 'MarkerSize', 8); hold on; grid on;
+semilogy(snrVec, berFM,   's--','LineWidth', 1.5, 'MarkerSize', 8);
+
+% theoretical BPSK curve for reference
+snrLin = 10.^(snrVec/10);
+berTheo = 0.5*erfc(sqrt(snrLin));
+semilogy(snrVec, berTheo, ':', 'LineWidth',1.2);
+
+xlabel('SNR (dB)');
+ylabel('BER');
+legend('GMSK (aligned)','FM','BPSK theory','Location','SouthWest');
+ylim([1e-4 1]);
+title('BER vs. SNR Comparison');
+
+%% Spectral Analysis of Transmit Signals
+txG_full  = gmod(bitsTx);
+msgFM_full = upsample(m_fm, sps);
+txF_full  = fmmod(msgFM_full, Fc, Fs, freqDev);
+
+figure;
+[pG,fG] = pwelch(txG_full, [], [], [], Fs);
+[pF,fF] = pwelch(txF_full, [], [], [], Fs);
+plot(fG/1e3, 10*log10(pG), 'LineWidth',1.5); hold on; 
+plot(fF/1e3, 10*log10(pF), 'LineWidth',1.5);
+xlabel('Frequency (kHz)');
+ylabel('Power Spectral Density (dB/Hz)');
+legend('GMSK','FM','Location','Best');
+title('PSD of GMSK vs. FM Signals');
+grid on;
+
+%% GMSK Eye Diagram and Constellation
+figure; eyediagram(txG_full, 2*sps);
+title('GMSK Eye Diagram (2 symbols)');
+
+figure; scatterplot(txG_full);
+title('GMSK Constellation');
+
+%% Compare FM Demodulated Waveforms at Mid SNR
+t_mid = (0:length(rxF_mid)-1)/Fs;
+figure;
+plot(t_mid, rxF_mid,    'LineWidth',1.2); hold on;
+plot(t_mid, msgFM_mid, '--',           'LineWidth',1.2);
+xlabel('Time (s)');
+ylabel('Amplitude');
+legend('Recovered FM','Original Bipolar Message','Location','Best');
+title(sprintf('FM Demodulated vs. Original at %d dB SNR', snrVec(midIdx)));
+grid on;
+
+
